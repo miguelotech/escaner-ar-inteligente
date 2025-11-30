@@ -3,17 +3,72 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Scanner AR Universal con Gemini</title>
+
+    <!-- TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // DeviceOrientationControls Inline
+        class DeviceOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = true;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                this.alphaOffset = 0;
+                this.onDeviceOrientationChangeEvent = (event) => { this.deviceOrientation = event; };
+                this.onScreenOrientationChangeEvent = () => { this.screenOrientation = window.orientation || 0; };
+                this.connect();
+            }
+            connect() {
+                this.onScreenOrientationChangeEvent();
+                window.addEventListener('orientationchange', this.onScreenOrientationChangeEvent, false);
+                window.addEventListener('deviceorientation', this.onDeviceOrientationChangeEvent, false);
+                this.enabled = true;
+            }
+            disconnect() {
+                window.removeEventListener('orientationchange', this.onScreenOrientationChangeEvent, false);
+                window.removeEventListener('deviceorientation', this.onDeviceOrientationChangeEvent, false);
+                this.enabled = false;
+            }
+            update() {
+                if (!this.enabled) return;
+                const device = this.deviceOrientation;
+                if (!device) return;
+                const alpha = device.alpha ? THREE.Math.degToRad(device.alpha) + this.alphaOffset : 0;
+                const beta = device.beta ? THREE.Math.degToRad(device.beta) : 0;
+                const gamma = device.gamma ? THREE.Math.degToRad(device.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+                this.setObjectQuaternion(this.object.quaternion, alpha, beta, gamma, orient);
+            }
+            setObjectQuaternion(quaternion, alpha, beta, gamma, orient) {
+                const zee = new THREE.Vector3(0, 0, 1);
+                const euler = new THREE.Euler();
+                const q0 = new THREE.Quaternion();
+                const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+                euler.set(beta, alpha, -gamma, 'YXZ');
+                quaternion.setFromEuler(euler);
+                quaternion.multiply(q1);
+                quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
+            }
+        }
+    </script>
+
     <style>
         body {
             margin: 0;
             overflow: hidden;
             background-color: black;
-            font-family: sans-serif;
+            font-family: 'Segoe UI', sans-serif;
         }
 
-        /* El video de la cámara ocupa toda la pantalla */
         #camera-stream {
             position: fixed;
             top: 0;
@@ -24,71 +79,76 @@
             z-index: 1;
         }
 
-        /* La interfaz de usuario (Botones y Texto) va encima */
-        #ui-layer {
+        #three-canvas {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
             z-index: 2;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-end;
-            align-items: center;
-            padding-bottom: 30px;
             pointer-events: none;
-            /* Permite ver a través */
         }
 
-        /* El cuadro de resultado */
-        #result-box {
-            background: rgba(0, 0, 0, 0.7);
-            color: #fff;
-            padding: 20px;
-            border-radius: 15px;
-            width: 80%;
-            margin-bottom: 20px;
-            text-align: center;
-            backdrop-filter: blur(5px);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            display: none;
-            /* Oculto al inicio */
-            pointer-events: auto;
+        #ui-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 3;
+            pointer-events: none;
         }
 
-        #result-title {
-            font-size: 1.2em;
+        #loader {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 20px;
             font-weight: bold;
-            color: #4db8ff;
-            margin-bottom: 5px;
+            text-shadow: 0 2px 4px black;
         }
 
-        #result-text {
-            font-size: 0.9em;
-            line-height: 1.4;
-        }
-
-        /* El botón de escanear */
-        #scan-btn {
-            background: white;
-            border: 4px solid rgba(255, 255, 255, 0.5);
-            width: 70px;
-            height: 70px;
-            border-radius: 50%;
+        #sensor-btn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 255, 255, 0.9);
+            color: black;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 30px;
+            font-weight: bold;
             cursor: pointer;
             pointer-events: auto;
-            transition: transform 0.1s;
+            display: none;
+            z-index: 10;
+            font-size: 16px;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
-        #scan-btn:active {
-            transform: scale(0.9);
-            background: #ddd;
+        #status-indicator {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #00ffff;
+            font-size: 14px;
+            font-weight: bold;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 8px 15px;
+            border-radius: 20px;
+            border: 1px solid #00ffff;
         }
 
-        /* Canvas invisible para capturar la foto */
         canvas {
             display: none;
+        }
+
+        #three-canvas {
+            display: block;
         }
     </style>
 </head>
@@ -96,13 +156,12 @@
 <body>
 
     <video id="camera-stream" autoplay playsinline muted></video>
+    <canvas id="three-canvas"></canvas>
 
     <div id="ui-layer">
-        <div id="result-box">
-            <div id="result-title">Analizando...</div>
-            <div id="result-text">Espere un momento.</div>
-        </div>
-        <button id="scan-btn"></button>
+        <button id="sensor-btn">🌌 Iniciar AR</button>
+        <div id="status-indicator">Iniciando Sistema...</div>
+        <div id="loader">Cargando Motores Neurales...</div>
     </div>
 
     <canvas id="snapshot-canvas"></canvas>
@@ -118,106 +177,304 @@
     <script type="module">
         import { GoogleGenerativeAI } from "@google/generative-ai";
 
-        // API Key de Google Generative AI (Vite)
         const API_KEY = import.meta.env.VITE_API_KEY;
-
         const video = document.getElementById('camera-stream');
-        const canvas = document.getElementById('snapshot-canvas');
-        const scanBtn = document.getElementById('scan-btn');
-        const resultBox = document.getElementById('result-box');
-        const resultTitle = document.getElementById('result-title');
-        const resultText = document.getElementById('result-text');
+        const snapshotCanvas = document.getElementById('snapshot-canvas');
+        const loader = document.getElementById('loader');
+        const sensorBtn = document.getElementById('sensor-btn');
+        const statusInd = document.getElementById('status-indicator');
 
-        // 1. Iniciar Cámara con lógica robusta
+        let scene, camera, renderer, controls;
+        let arObjects = {};
+        let modelCOCO = null;
+        let lastGeminiResult = null;
+        let isGeminiThinking = false;
+        let gyroEnabled = false;
+
+        async function init() {
+            try {
+                initThreeJS();
+                await startCamera();
+                checkSensorPermissions();
+            } catch (e) {
+                console.error(e);
+                loader.innerText = "Error Init: " + e;
+            }
+        }
+
         async function startCamera() {
             try {
-                console.log("Intentando acceder a cámara trasera...");
-                // Intento 1: Cámara trasera específica
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment" }
-                });
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 video.srcObject = stream;
                 video.onloadedmetadata = () => {
-                    video.play().catch(e => console.error("Error al reproducir video:", e));
+                    video.play();
+                    loadModel();
                 };
             } catch (err) {
-                console.warn("No se pudo acceder a la cámara trasera. Intentando cámara genérica.", err);
-                try {
-                    // Intento 2: Cualquier cámara (fallback)
-                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                    video.srcObject = stream;
-                    video.onloadedmetadata = () => {
-                        video.play().catch(e => console.error("Error al reproducir video fallback:", e));
-                    };
-                } catch (err2) {
-                    alert("Error Fatal: No se pudo acceder a ninguna cámara. \n\n1. Asegúrate de dar permisos de cámara.\n2. Asegúrate de estar en HTTPS.\n3. Cierra otras apps que usen la cámara.\n\nDetalle: " + err2);
-                }
+                alert("Error cámara: " + err);
             }
         }
 
-        // 2. Función: Convertir imagen a Base64 para Gemini
-        function fileToGenerativePart(canvas) {
-            return {
-                inlineData: {
-                    data: canvas.toDataURL("image/jpeg").split(",")[1], // Quita el encabezado 'data:image...'
-                    mimeType: "image/jpeg",
-                },
-            };
+        function initThreeJS() {
+            const canvas = document.getElementById('three-canvas');
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setClearColor(0x000000, 0);
+
+            const light = new THREE.AmbientLight(0xffffff, 1);
+            scene.add(light);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            dirLight.position.set(0, 1, 1);
+            scene.add(dirLight);
+
+            animate();
         }
 
-        // 3. Lógica principal al hacer Click
-        scanBtn.addEventListener('click', async () => {
-            // Animación visual
-            resultBox.style.display = "block";
-            resultTitle.innerText = "👀 Mirando...";
-            resultText.innerText = "Identificando objeto...";
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls && gyroEnabled) {
+                controls.update();
+            }
+            renderer.render(scene, camera);
+        }
 
-            // Capturar el frame actual del video en el canvas
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
+        async function loadModel() {
             try {
-                // Preparar llamada a Gemini
-                const genAI = new GoogleGenerativeAI(API_KEY);
-                const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-                const prompt = "Identifica el objeto principal. Responde EXCLUSIVAMENTE con este formato JSON: { \"titulo\": \"Nombre del objeto\", \"descripcion\": \"Dato curioso corto\" }";
-
-                const imagePart = fileToGenerativePart(canvas);
-
-                const result = await model.generateContent([prompt, imagePart]);
-                const response = await result.response;
-                const text = response.text();
-
-                let data;
-                try {
-                    // Limpiar el JSON recibido (a veces trae comillas extra)
-                    const cleanText = text.replace(/```json|```/g, '').trim();
-                    data = JSON.parse(cleanText);
-                } catch (e) {
-                    // Si falla el JSON, usamos el texto plano
-                    console.warn("No es JSON válido, mostrando texto plano.");
-                    data = {
-                        titulo: "Resultado",
-                        descripcion: text
-                    };
-                }
-
-                // Mostrar resultado
-                resultTitle.innerText = data.titulo;
-                resultText.innerText = data.descripcion;
-
-            } catch (error) {
-                console.error(error);
-                resultTitle.innerText = "Error Detallado";
-                resultText.innerText = error.toString();
+                statusInd.innerText = "Cargando IA...";
+                modelCOCO = await cocoSsd.load();
+                loader.style.display = 'none';
+                statusInd.innerText = "Sistema Listo";
+                detectFrame();
+                startGeminiLoop();
+            } catch (e) {
+                loader.innerText = "Error IA";
             }
+        }
+
+        async function detectFrame() {
+            if (!modelCOCO) return;
+            const predictions = await modelCOCO.detect(video);
+
+            if (predictions.length > 0) {
+                const best = predictions.sort((a, b) => b.score - a.score)[0];
+                const labelText = (lastGeminiResult && (Date.now() - lastGeminiResult.timestamp < 5000))
+                    ? lastGeminiResult.text
+                    : best.class;
+                updateARObject(best, labelText);
+            }
+            requestAnimationFrame(detectFrame);
+        }
+
+        function updateARObject(prediction, text) {
+            if (!gyroEnabled) return;
+
+            const id = "obj_main";
+            if (!arObjects[id]) create3DLabel(id, text);
+            const obj = arObjects[id];
+
+            // Mapeo 2D -> 3D
+            const videoRatio = video.videoWidth / video.videoHeight;
+            const windowRatio = window.innerWidth / window.innerHeight;
+            let scaleX = 1, scaleY = 1;
+
+            if (windowRatio > videoRatio) {
+                scaleY = windowRatio / videoRatio;
+            } else {
+                scaleX = videoRatio / windowRatio;
+            }
+
+            const normX = (prediction.bbox[0] + prediction.bbox[2] / 2) / video.videoWidth;
+            const normY = (prediction.bbox[1] + prediction.bbox[3] / 2) / video.videoHeight;
+
+            const ndcX = (normX - 0.5) * scaleX * 2;
+            const ndcY = -(normY - 0.5) * scaleY * 2;
+
+            const vector = new THREE.Vector3(ndcX, ndcY, 0.5);
+            vector.unproject(camera);
+            const dir = vector.sub(camera.position).normalize();
+            const distance = 3;
+            const pos = camera.position.clone().add(dir.multiplyScalar(distance));
+
+            obj.position.lerp(pos, 0.1);
+            obj.lookAt(camera.position);
+            updateLabelText(obj, text);
+        }
+
+        function create3DLabel(id, text) {
+            const group = new THREE.Group();
+
+            // Panel Futurista (Más alto para caber 2 líneas)
+            const geometry = new THREE.PlaneGeometry(1.8, 0.8);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0x000000,
+                opacity: 0.6,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+            const plane = new THREE.Mesh(geometry, material);
+            group.add(plane);
+
+            // Borde Neón
+            const edges = new THREE.EdgesGeometry(geometry);
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 }));
+            group.add(line);
+
+            // Texto
+            const canvas = document.createElement('canvas');
+            canvas.width = 512; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+
+            drawTextOnCanvas(ctx, text);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const textMat = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+            const textGeo = new THREE.PlaneGeometry(1.8, 0.9);
+            const textMesh = new THREE.Mesh(textGeo, textMat);
+            textMesh.position.z = 0.02;
+
+            group.add(textMesh);
+            group.userData = { canvas: canvas, texture: texture, currentText: text };
+
+            scene.add(group);
+            arObjects[id] = group;
+        }
+
+        function updateLabelText(group, newText) {
+            if (group.userData.currentText === newText) return;
+            const canvas = group.userData.canvas;
+            const ctx = canvas.getContext('2d');
+
+            drawTextOnCanvas(ctx, newText);
+
+            group.userData.texture.needsUpdate = true;
+            group.userData.currentText = newText;
+        }
+
+        function drawTextOnCanvas(ctx, text) {
+            ctx.clearRect(0, 0, 512, 256);
+
+            // Glow effect
+            ctx.shadowColor = "#00ffff";
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            // Intentar separar Nombre y Dato
+            let name = text;
+            let fact = "";
+
+            if (text.includes(":")) {
+                const parts = text.split(":");
+                name = parts[0].trim();
+                fact = parts.slice(1).join(":").trim();
+            } else if (text.length > 15) {
+                name = text.substring(0, 15) + "...";
+                fact = text;
+            }
+
+            // Dibujar Nombre (Grande)
+            ctx.font = 'bold 50px "Segoe UI", Arial';
+            ctx.fillText(name.toUpperCase(), 256, 80);
+
+            // Dibujar Dato (Pequeño)
+            if (fact) {
+                ctx.font = 'italic 30px "Segoe UI", Arial';
+                ctx.fillStyle = '#cccccc';
+                // Simple word wrap
+                const words = fact.split(' ');
+                let line = '';
+                let y = 140;
+
+                for (let n = 0; n < words.length; n++) {
+                    const testLine = line + words[n] + ' ';
+                    const metrics = ctx.measureText(testLine);
+                    if (metrics.width > 480 && n > 0) {
+                        ctx.fillText(line, 256, y);
+                        line = words[n] + ' ';
+                        y += 35;
+                    } else {
+                        line = testLine;
+                    }
+                }
+                ctx.fillText(line, 256, y);
+            }
+        }
+
+        function startGeminiLoop() {
+            setInterval(async () => {
+                if (isGeminiThinking) return;
+                statusInd.innerText = "👁️ Analizando...";
+                statusInd.style.borderColor = "#ffff00";
+                statusInd.style.color = "#ffff00";
+
+                isGeminiThinking = true;
+
+                // Optimización: Reducir imagen a 512px
+                const scale = Math.min(1, 512 / video.videoWidth);
+                snapshotCanvas.width = video.videoWidth * scale;
+                snapshotCanvas.height = video.videoHeight * scale;
+
+                const ctx = snapshotCanvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+
+                try {
+                    const genAI = new GoogleGenerativeAI(API_KEY);
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+                    const prompt = "Identifica el objeto y dame un dato curioso BREVE. Responde SIEMPRE en ESPAÑOL. Formato: 'Nombre: Dato curioso'. Máximo 12 palabras en total.";
+
+                    // Comprimir calidad JPEG
+                    const base64Data = snapshotCanvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+
+                    const imagePart = { inlineData: { data: base64Data, mimeType: "image/jpeg", } };
+                    const result = await model.generateContent([prompt, imagePart]);
+                    const text = result.response.text().trim();
+                    lastGeminiResult = { text: text, timestamp: Date.now() };
+
+                    statusInd.innerText = "✅ " + text.split(":")[0];
+                    statusInd.style.borderColor = "#00ffff";
+                    statusInd.style.color = "#00ffff";
+                } catch (error) {
+                    console.error(error);
+                    let errMsg = "Error Red";
+                    if (error.message.includes("429")) errMsg = "Cuota Excedida";
+                    if (error.message.includes("Failed to fetch")) errMsg = "Sin Internet";
+                    statusInd.innerText = "❌ " + errMsg;
+                }
+                finally { isGeminiThinking = false; }
+            }, 4000);
+        }
+
+        function checkSensorPermissions() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                sensorBtn.style.display = 'block';
+                sensorBtn.onclick = () => {
+                    DeviceOrientationEvent.requestPermission().then(response => {
+                        if (response == 'granted') {
+                            sensorBtn.style.display = 'none';
+                            enableControls();
+                        }
+                    });
+                };
+            } else { enableControls(); }
+        }
+
+        function enableControls() {
+            gyroEnabled = true;
+            controls = new DeviceOrientationControls(camera);
+            controls.connect();
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        // Arrancar
-        startCamera();
+        init();
     </script>
 </body>
 
