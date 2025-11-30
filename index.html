@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner AR Universal con Gemini</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: black;
+            font-family: sans-serif;
+        }
+
+        /* El video de la cámara ocupa toda la pantalla */
+        #camera-stream {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+
+        /* La interfaz de usuario (Botones y Texto) va encima */
+        #ui-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: center;
+            padding-bottom: 30px;
+            pointer-events: none;
+            /* Permite ver a través */
+        }
+
+        /* El cuadro de resultado */
+        #result-box {
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 20px;
+            border-radius: 15px;
+            width: 80%;
+            margin-bottom: 20px;
+            text-align: center;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            display: none;
+            /* Oculto al inicio */
+            pointer-events: auto;
+        }
+
+        #result-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #4db8ff;
+            margin-bottom: 5px;
+        }
+
+        #result-text {
+            font-size: 0.9em;
+            line-height: 1.4;
+        }
+
+        /* El botón de escanear */
+        #scan-btn {
+            background: white;
+            border: 4px solid rgba(255, 255, 255, 0.5);
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: transform 0.1s;
+        }
+
+        #scan-btn:active {
+            transform: scale(0.9);
+            background: #ddd;
+        }
+
+        /* Canvas invisible para capturar la foto */
+        canvas {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <video id="camera-stream" autoplay playsinline muted></video>
+
+    <div id="ui-layer">
+        <div id="result-box">
+            <div id="result-title">Analizando...</div>
+            <div id="result-text">Espere un momento.</div>
+        </div>
+        <button id="scan-btn"></button>
+    </div>
+
+    <canvas id="snapshot-canvas"></canvas>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/generative-ai": "https://esm.run/@google/generative-ai"
+        }
+      }
+    </script>
+
+    <script type="module">
+        import { GoogleGenerativeAI } from "@google/generative-ai";
+
+        // API Key de Google Generative AI (Vite)
+        const API_KEY = import.meta.env.VITE_API_KEY;
+
+        const video = document.getElementById('camera-stream');
+        const canvas = document.getElementById('snapshot-canvas');
+        const scanBtn = document.getElementById('scan-btn');
+        const resultBox = document.getElementById('result-box');
+        const resultTitle = document.getElementById('result-title');
+        const resultText = document.getElementById('result-text');
+
+        // 1. Iniciar Cámara con lógica robusta
+        async function startCamera() {
+            try {
+                console.log("Intentando acceder a cámara trasera...");
+                // Intento 1: Cámara trasera específica
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" }
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play().catch(e => console.error("Error al reproducir video:", e));
+                };
+            } catch (err) {
+                console.warn("No se pudo acceder a la cámara trasera. Intentando cámara genérica.", err);
+                try {
+                    // Intento 2: Cualquier cámara (fallback)
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        video.play().catch(e => console.error("Error al reproducir video fallback:", e));
+                    };
+                } catch (err2) {
+                    alert("Error Fatal: No se pudo acceder a ninguna cámara. \n\n1. Asegúrate de dar permisos de cámara.\n2. Asegúrate de estar en HTTPS.\n3. Cierra otras apps que usen la cámara.\n\nDetalle: " + err2);
+                }
+            }
+        }
+
+        // 2. Función: Convertir imagen a Base64 para Gemini
+        function fileToGenerativePart(canvas) {
+            return {
+                inlineData: {
+                    data: canvas.toDataURL("image/jpeg").split(",")[1], // Quita el encabezado 'data:image...'
+                    mimeType: "image/jpeg",
+                },
+            };
+        }
+
+        // 3. Lógica principal al hacer Click
+        scanBtn.addEventListener('click', async () => {
+            // Animación visual
+            resultBox.style.display = "block";
+            resultTitle.innerText = "👀 Mirando...";
+            resultText.innerText = "Identificando objeto...";
+
+            // Capturar el frame actual del video en el canvas
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            try {
+                // Preparar llamada a Gemini
+                const genAI = new GoogleGenerativeAI(API_KEY);
+                const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+                const prompt = "Identifica el objeto principal. Responde EXCLUSIVAMENTE con este formato JSON: { \"titulo\": \"Nombre del objeto\", \"descripcion\": \"Dato curioso corto\" }";
+
+                const imagePart = fileToGenerativePart(canvas);
+
+                const result = await model.generateContent([prompt, imagePart]);
+                const response = await result.response;
+                const text = response.text();
+
+                let data;
+                try {
+                    // Limpiar el JSON recibido (a veces trae comillas extra)
+                    const cleanText = text.replace(/```json|```/g, '').trim();
+                    data = JSON.parse(cleanText);
+                } catch (e) {
+                    // Si falla el JSON, usamos el texto plano
+                    console.warn("No es JSON válido, mostrando texto plano.");
+                    data = {
+                        titulo: "Resultado",
+                        descripcion: text
+                    };
+                }
+
+                // Mostrar resultado
+                resultTitle.innerText = data.titulo;
+                resultText.innerText = data.descripcion;
+
+            } catch (error) {
+                console.error(error);
+                resultTitle.innerText = "Error Detallado";
+                resultText.innerText = error.toString();
+            }
+        });
+
+        // Arrancar
+        startCamera();
+    </script>
+</body>
+
+</html>
